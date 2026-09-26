@@ -1,0 +1,74 @@
+const std = @import("std");
+const hibana = @import("hibana");
+const app = @import("app.zig");
+const mem = @import("memory_store.zig");
+const t = std.testing;
+
+const App = app.App(hibana.testing.Runtime(mem.Env), mem.Store);
+
+test "shorten then resolve" {
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    var env: mem.Env = .{ .gpa = t.allocator, .io = t.io };
+    defer env.deinit();
+
+    const created = hibana.testing.request(App, arena.allocator(), &env, "/shorten", .{
+        .method = .POST,
+        .body = "{\"url\":\"https://ziglang.org\"}",
+    });
+    try t.expectEqual(hibana.Status.created, created.status);
+    try t.expectEqualStrings("nosniff", created.header("x-content-type-options").?);
+
+    const Out = struct { code: []const u8, url: []const u8 };
+    const out = try std.json.parseFromSliceLeaky(Out, arena.allocator(), created.body, .{});
+    try t.expectEqual(app.code_len, out.code.len);
+
+    const path = try std.fmt.allocPrint(arena.allocator(), "/{s}", .{out.code});
+    const res = hibana.testing.request(App, arena.allocator(), &env, path, .{});
+    try t.expectEqual(hibana.Status.found, res.status);
+    try t.expectEqualStrings("https://ziglang.org", res.header("location").?);
+}
+
+test "rejects bad input and unknown codes" {
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    var env: mem.Env = .{ .gpa = t.allocator, .io = t.io };
+    defer env.deinit();
+    const a = arena.allocator();
+
+    try t.expectEqual(hibana.Status.bad_request, hibana.testing.request(App, a, &env, "/shorten", .{
+        .method = .POST,
+        .body = "{\"url\":\"ftp://x\"}",
+    }).status);
+    try t.expectEqual(hibana.Status.bad_request, hibana.testing.request(App, a, &env, "/shorten", .{
+        .method = .POST,
+        .body = "{}",
+    }).status);
+    for ([_][]const u8{ "https://a\\nb", "https://a\\r\\nset-cookie: x", "https:///nohost", "https://a b" }) |bad| {
+        const body = try std.fmt.allocPrint(a, "{{\"url\":\"{s}\"}}", .{bad});
+        try t.expectEqual(hibana.Status.bad_request, hibana.testing.request(App, a, &env, "/shorten", .{
+            .method = .POST,
+            .body = body,
+        }).status);
+    }
+    try t.expectEqual(hibana.Status.not_found, hibana.testing.request(App, a, &env, "/abcdefg", .{}).status);
+}
+
+test "memory store survives concurrent writers" {
+    var env: mem.Env = .{ .gpa = t.allocator, .io = t.io };
+    defer env.deinit();
+    const Worker = struct {
+        fn run(e: *mem.Env, id: u8) void {
+            var key: [4]u8 = undefined;
+            for (0..200) |i| {
+                key = .{ 'k', id, @intCast(i % 100), 0 };
+                mem.Store.put(e, &key, "https://example.com") catch unreachable;
+                _ = mem.Store.get(e, &key) catch unreachable;
+            }
+        }
+    };
+    var threads: [8]std.Thread = undefined;
+    for (&threads, 0..) |*th, id| th.* = try std.Thread.spawn(.{}, Worker.run, .{ &env, @as(u8, @intCast(id)) });
+    for (threads) |th| th.join();
+    try t.expectEqual(@as(u32, 8 * 100), env.links.count());
+}

@@ -1,0 +1,19 @@
+.{
+    .name = .hibana,
+    .version = "0.0.0",
+    .fingerprint = 0xd8b6b0d0d620bae9,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Runtime/bindings layer for Cloudflare Workers, vendored from
+        // github.com/nilslice/workers-zig@c82686d with the patches listed in
+        // vendor/workers-zig/PATCHES.md. Only `hibana-workers` imports it.
+        .@"workers-zig" = .{ .path = "vendor/workers-zig" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "vendor",
+        "README.md",
+    },
+}

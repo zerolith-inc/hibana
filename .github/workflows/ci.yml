@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Core and std adapter tests
+        run: zig build test --summary all
+      - name: Check formatting
+        run: zig fmt --check build.zig src examples/*/build.zig examples/*/src tests/e2e/build.zig tests/e2e/src vendor/workers-zig/build.zig
+      - name: Example hello (worker build)
+        working-directory: examples/hello
+        run: zig build
+      - name: Example url-shortener (tests + worker build)
+        working-directory: examples/url-shortener
+        run: |
+          zig build test --summary all
+          zig build
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build e2e worker
+        working-directory: tests/e2e
+        run: zig build
+      - name: Concurrent requests under wrangler dev
+        working-directory: tests/e2e
+        run: |
+          npx --yes wrangler@4 dev --port 8790 > wrangler.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf localhost:8790/stack/a/1/1 && break; sleep 1; done
+          python3 concurrency.py 8790 || (cat wrangler.log; exit 1)

@@ -1,0 +1,10 @@
+.{
+    .name = .hibana_url_shortener,
+    .version = "0.0.0",
+    .fingerprint = 0xe52deae9cb409755,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .hibana = .{ .path = "../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}
