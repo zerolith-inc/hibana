@@ -24,6 +24,7 @@ pub fn Runtime(comptime EnvT: type) type {
             /// Copies of head data: the originals are invalidated when the body is read.
             target: []const u8,
             headers_: []const http.Header,
+            body_state: enum { unread, done, failed } = .unread,
 
             pub fn init(io: Io, arena: Allocator, inner: *http.Server.Request) !Request {
                 var list: std.ArrayList(http.Header) = .empty;
@@ -59,16 +60,27 @@ pub fn Runtime(comptime EnvT: type) type {
             pub fn headers(self: *const Request) ![]const http.Header {
                 return self.headers_;
             }
+            /// Reads the body if the request framing says there is one. Decided by
+            /// Content-Length / Transfer-Encoding, never by method: a DELETE with a
+            /// body left unread would be parsed as the next request on the connection.
             pub fn body(self: *Request) !?[]const u8 {
-                if (!self.method_.requestHasBody()) return null;
-                const reader = if (self.inner.head.expect != null)
-                    try self.inner.readerExpectContinue(&.{})
-                else
-                    self.inner.readerExpectNone(&.{});
+                if (self.body_state != .unread) return null;
+                self.body_state = .failed;
+                const head = &self.inner.head;
+                if (head.transfer_encoding == .none and (head.content_length orelse 0) == 0) {
+                    self.body_state = .done;
+                    return null;
+                }
+                if (head.expect != null) {
+                    try self.inner.writeExpectContinue();
+                    try self.inner.server.out.flush();
+                }
+                const reader = self.inner.server.reader.bodyReader(&.{}, head.transfer_encoding, head.content_length);
                 const bytes = reader.allocRemaining(self.arena, .limited(max_body_len)) catch |err| switch (err) {
                     error.StreamTooLong => return error.PayloadTooLarge,
                     else => |e| return e,
                 };
+                self.body_state = .done;
                 return if (bytes.len == 0) null else bytes;
             }
         };
@@ -214,9 +226,11 @@ pub fn Server(comptime AppT: type) type {
                     error.HttpConnectionClosing => return,
                     else => return log.debug("receive head failed: {t}", .{err}),
                 };
+                const client_keep_alive = request.head.keep_alive;
                 self.serveRequest(&request) catch |err| {
-                    return log.debug("serving '{s}' failed: {t}", .{ request.head.target, err });
+                    return log.debug("serving request failed: {t}", .{err});
                 };
+                if (!client_keep_alive) return;
             }
         }
 
@@ -228,20 +242,18 @@ pub fn Server(comptime AppT: type) type {
             var raw: AppT.Runtime.Request = try .init(self.io, a, request);
             const res = AppT.handle(a, &raw, self.env);
 
-            // If the handler never read the body, drain it so keep-alive works.
-            if (request.head.method.requestHasBody() and !raw_body_consumed(request)) {
-                _ = raw.body() catch return error.BodyDrainFailed;
-            }
+            // Consume any body the handler left unread so the next request on
+            // this connection starts at the right byte. If that fails (too
+            // large, malformed), answer and close the connection.
+            if (raw.body_state == .unread) _ = raw.body() catch {};
+            const keep_alive = raw.body_state == .done;
 
             try request.respond(res.body, .{
                 .status = res.status,
                 .extra_headers = res.headers.items,
-                .keep_alive = true,
+                .keep_alive = keep_alive,
             });
-        }
-
-        fn raw_body_consumed(request: *http.Server.Request) bool {
-            return request.server.reader.state != .received_head;
+            if (!keep_alive) return error.ConnectionClosed;
         }
     };
 }

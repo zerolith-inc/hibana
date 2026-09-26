@@ -45,6 +45,16 @@ fn fails(_: *Ctx) !Response {
 fn proxy(c: *Ctx) !Response {
     return c.forward("https://upstream.example/x");
 }
+fn proxyWithCredentials(c: *Ctx) !Response {
+    return c.forwardWith("https://upstream.example/x", .{ .credentials = true });
+}
+fn go(c: *Ctx) !Response {
+    return c.redirect((try c.req.query("to")) orelse "/", .found);
+}
+fn badHeaderName(c: *Ctx) !Response {
+    try c.header("x a", "1");
+    return c.text("x");
+}
 
 fn auth(c: *Ctx, next: Next) !Response {
     if (try c.req.header("authorization")) |v| c.vars.user = v;
@@ -74,6 +84,9 @@ const App = hibana.App(Rt, .{
         hibana.post("/lazy", ignoresBody),
         hibana.get("/fail", fails),
         hibana.all("/proxy", proxy),
+        hibana.all("/proxy-creds", proxyWithCredentials),
+        hibana.get("/go", go),
+        hibana.get("/bad-name", badHeaderName),
     },
 });
 
@@ -128,7 +141,38 @@ test "404 and 405" {
     var h: Harness = .init();
     defer h.deinit();
     try t.expectEqual(hibana.Status.not_found, h.req("/nope", .{}).status);
-    try t.expectEqual(hibana.Status.method_not_allowed, h.req("/users/1", .{ .method = .DELETE }).status);
+    const res = h.req("/users/1", .{ .method = .DELETE });
+    try t.expectEqual(hibana.Status.method_not_allowed, res.status);
+    try t.expectEqualStrings("GET, HEAD", res.header("allow").?);
+}
+
+test "HEAD is served by the GET route without a body (review M3)" {
+    var h: Harness = .init();
+    defer h.deinit();
+    const res = h.req("/", .{ .method = .HEAD });
+    try t.expectEqual(hibana.Status.ok, res.status);
+    try t.expectEqualStrings("", res.body);
+    try t.expectEqualStrings("text/plain; charset=utf-8", res.header("content-type").?);
+}
+
+test "'://' in an origin-form query does not re-route (review M1)" {
+    var h: Harness = .init();
+    defer h.deinit();
+    try t.expectEqualStrings("none", h.req("/search?next=http://x/", .{}).body);
+    try t.expectEqual(hibana.Status.not_found, h.req("/nope?next=http://x/", .{}).status);
+}
+
+test "CR/LF in header values and invalid names never reach the wire (review H2)" {
+    var h: Harness = .init();
+    defer h.deinit();
+    for ([_][]const u8{ "/go?to=/x%0D%0Aset-cookie:%20pwn=1", "/go?to=/x%0Aset-cookie:%20pwn=1", "/go?to=/x%00" }) |url| {
+        const res = h.req(url, .{});
+        try t.expectEqual(hibana.Status.internal_server_error, res.status);
+        try t.expect(res.header("location") == null);
+        try t.expect(res.header("set-cookie") == null);
+    }
+    try t.expectEqual(hibana.Status.found, h.req("/go?to=/ok", .{}).status);
+    try t.expectEqual(hibana.Status.internal_server_error, h.req("/bad-name", .{}).status);
 }
 
 test "middleware runs as an onion and c.header reaches the response" {
@@ -201,6 +245,39 @@ test "forward passes method, headers (minus host) and body" {
     try t.expectEqual(@as(usize, 1), fwd.headers.len);
     try t.expectEqualStrings("x-a", fwd.headers[0].name);
     try t.expectEqualStrings("payload", fwd.body.?);
+}
+
+const sensitive_headers = [_]hibana.Header{
+    .{ .name = "content-length", .value = "7" },
+    .{ .name = "Connection", .value = "keep-alive, x-secret" },
+    .{ .name = "x-secret", .value = "s" },
+    .{ .name = "te", .value = "trailers" },
+    .{ .name = "proxy-authorization", .value = "p" },
+    .{ .name = "cookie", .value = "session=abc" },
+    .{ .name = "authorization", .value = "Bearer t" },
+    .{ .name = "x-keep", .value = "1" },
+};
+
+test "forward drops hop-by-hop and credentials, keeps DELETE bodies (review M2)" {
+    var h: Harness = .init();
+    defer h.deinit();
+    _ = h.req("/proxy", .{ .method = .DELETE, .body = "payload", .headers = &sensitive_headers });
+    const fwd = h.env.forwarded.?;
+    try t.expectEqualStrings("payload", fwd.body.?);
+    try t.expectEqual(@as(usize, 1), fwd.headers.len);
+    try t.expectEqualStrings("x-keep", fwd.headers[0].name);
+
+    _ = h.req("/proxy", .{ .method = .GET, .body = "ignored" });
+    try t.expect(h.env.forwarded.?.body == null);
+}
+
+test "forwardWith credentials keeps cookie and authorization" {
+    var h: Harness = .init();
+    defer h.deinit();
+    _ = h.req("/proxy-creds", .{ .method = .POST, .headers = &sensitive_headers });
+    const fwd = h.env.forwarded.?;
+    try t.expectEqual(@as(usize, 3), fwd.headers.len);
+    try t.expect(fwd.body == null);
 }
 
 fn customError(c: *Ctx, err: anyerror) !Response {

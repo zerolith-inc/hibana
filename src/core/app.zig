@@ -94,6 +94,12 @@ pub fn App(comptime Rt: type, comptime config: anytype) type {
                     res.headers.append(arena, h) catch return fallbackError(error.OutOfMemory);
                 }
             }
+            // Every header passes through here, so this is the one place that
+            // stops CR/LF injection whatever path built the response.
+            if (!validHeaders(res.headers.items)) {
+                res = defaultErrorResponse(arena, error.InvalidHeader, null);
+            }
+            if (c.req.method == .HEAD) res.body = "";
             return res;
         }
 
@@ -111,18 +117,25 @@ pub fn App(comptime Rt: type, comptime config: anytype) type {
 
         fn dispatch(c: *Ctx) anyerror!Response {
             const path: router.SplitPath = .init(c.req.path);
-            var path_matched = false;
+            // HEAD is answered by the GET route; `handle` drops the body.
+            const method: Method = if (c.req.method == .HEAD) .GET else c.req.method;
+            var allow: std.ArrayList(u8) = .empty;
             inline for (routes) |r| {
                 const pattern = comptime router.parse(r.pattern);
                 var caps: router.Captures(pattern) = undefined;
                 if (router.match(pattern, &path, &caps)) {
-                    if (r.method == null or r.method.? == c.req.method) {
+                    if (r.method == null or r.method.? == method) {
                         return callHandler(r.handler, pattern, c, &caps);
                     }
-                    path_matched = true;
+                    const name = if (r.method.? == .GET) "GET, HEAD" else @tagName(r.method.?);
+                    if (allow.items.len > 0) try allow.appendSlice(c.arena, ", ");
+                    try allow.appendSlice(c.arena, name);
                 }
             }
-            if (path_matched) return error.MethodNotAllowed;
+            if (allow.items.len > 0) {
+                try c.header("allow", allow.items);
+                return error.MethodNotAllowed;
+            }
             if (@hasField(Config, "not_found")) return config.not_found(c);
             return error.NotFound;
         }
@@ -202,6 +215,18 @@ pub fn defaultErrorResponse(arena: Allocator, err: anyerror, detail: ?[]const u8
     var res: Response = .init(status, bytes);
     res.setHeader(arena, "content-type", "application/json") catch {};
     return res;
+}
+
+/// Header names must be tokens and values must not contain CR, LF or NUL.
+fn validHeaders(headers: []const std.http.Header) bool {
+    for (headers) |h| {
+        if (h.name.len == 0) return false;
+        for (h.name) |ch| {
+            if (ch <= ' ' or ch >= 0x7f or std.mem.indexOfScalar(u8, "\"(),/:;<=>?@[\\]{}", ch) != null) return false;
+        }
+        if (std.mem.indexOfAny(u8, h.value, "\r\n\x00") != null) return false;
+    }
+    return true;
 }
 
 fn convert(comptime T: type, raw: []const u8) !T {

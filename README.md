@@ -57,6 +57,8 @@ Then `zig build && npx wrangler dev` (wrangler.toml needs `compatibility_flags =
 | `src/core/testing.zig` | Fake runtime for unit tests (`hibana.testing`). |
 | `src/adapters/workers` | `hibana-workers`: Runtime over workers-zig, `fetch(App)` entrypoint. |
 | `src/adapters/std` | `hibana-std`: Runtime and server over `std.http`. |
+| `vendor/workers-zig` | workers-zig with local patches (see its `PATCHES.md`). |
+| `tests/e2e` | Concurrency test under `wrangler dev`. |
 | `examples/hello` | Minimal worker. |
 | `examples/url-shortener` | KV-backed shortener; the same app runs on Workers, on `std.http` (`zig build run`), and in tests. |
 | `docs/` | Guides and design notes. |

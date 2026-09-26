@@ -32,7 +32,7 @@ fn Handlers(comptime Ctx: type, comptime Store: type) type {
             const In = struct { url: []const u8 };
             const in = try c.req.json(In);
             if (!isHttpUrl(in.url)) {
-                c.req.validation_error = "url must start with http:// or https://";
+                c.req.validation_error = "url must be an absolute http(s) URL without spaces or control characters";
                 return error.BadRequest;
             }
             var raw: [code_len]u8 = undefined;
@@ -60,6 +60,11 @@ fn securityHeaders(comptime Ctx: type) fn (*Ctx, hibana.Next) anyerror!hibana.Re
     }.mw;
 }
 
+/// An absolute http(s) URL with a host and no control characters or spaces,
+/// so it is safe to send back as a `location` header.
 fn isHttpUrl(url: []const u8) bool {
-    return std.mem.startsWith(u8, url, "https://") or std.mem.startsWith(u8, url, "http://");
+    for (url) |ch| if (ch <= ' ' or ch == 0x7f) return false;
+    const uri = std.Uri.parse(url) catch return false;
+    if (!std.mem.eql(u8, uri.scheme, "https") and !std.mem.eql(u8, uri.scheme, "http")) return false;
+    return uri.host != null;
 }

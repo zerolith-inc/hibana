@@ -34,11 +34,21 @@ pub const Runtime = struct {
     };
 
     pub fn forward(_: *Env, arena: std.mem.Allocator, req: hibana.ForwardRequest) !hibana.Response {
-        var upstream = try workers.fetch(arena, req.url, .{
+        // Cloudflare adds cf-* request headers (client IP, geo); keep them in this zone.
+        var hdrs: std.ArrayList(hibana.Header) = .empty;
+        for (req.headers) |h| {
+            if (h.name.len >= 3 and std.ascii.eqlIgnoreCase(h.name[0..3], "cf-")) continue;
+            try hdrs.append(arena, h);
+        }
+        var upstream = workers.fetch(arena, req.url, .{
             .method = req.method,
-            .headers = req.headers,
+            .headers = hdrs.items,
             .body = if (req.body) |b| .{ .bytes = b } else .none,
-        });
+        }) catch |err| switch (err) {
+            // The shim reports network failures as a null handle.
+            error.NullHandle => return error.BadGateway,
+            else => |e| return e,
+        };
         defer upstream.deinit();
 
         var res: hibana.Response = .init(upstream.status(), try upstream.bytes());

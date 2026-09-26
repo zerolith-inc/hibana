@@ -22,7 +22,8 @@ const App = hibana.App(Runtime, .{
 `hibana.Context(Runtime, Vars)` (also available as `App.Ctx`).
 
 Routes match in declaration order. A path that matches a route with a
-different method gives 405; no match gives 404.
+different method gives 405 with an `allow` header; no match gives 404.
+HEAD requests are answered by the GET route with the body removed.
 
 ## Handlers and typed params
 
@@ -49,7 +50,8 @@ The handler's first parameter may be `anytype`.
 | `c.arena` | per-request allocator |
 | `c.text`, `c.html`, `c.json`, `c.jsonStatus`, `c.status`, `c.redirect`, `c.body` | responses |
 | `try c.header(name, value)` | add a header to whatever response is returned |
-| `try c.forward(url)` | proxy the request (method, headers minus host, body) |
+| `try c.forward(url)` | proxy the request: method, body (except GET/HEAD), headers minus hop-by-hop, `host`, `cookie` and `authorization` |
+| `try c.forwardWith(url, .{ .credentials = true })` | same, but keep `cookie` and `authorization` |
 
 ## Middleware
 
@@ -85,6 +87,12 @@ Returning an error from a handler or middleware produces a JSON response
 | anything else | 500 |
 
 Set `c.req.validation_error` before returning `error.BadRequest` to fill `detail`.
+
+A response whose header names are not tokens, or whose values contain CR, LF or
+NUL, is replaced with a 500 before it leaves the app. Validate user input you put
+into headers (for example a redirect target) and return 400 yourself.
+
+Header names and values are not copied: keep them in `c.arena` or static memory.
 
 ## Testing
 

@@ -1,6 +1,11 @@
 # Runtime notes
 
-Findings from building the MVP on workers-zig (pinned at `c82686d`).
+hibana vendors workers-zig (`vendor/workers-zig`, upstream `c82686d`) with the
+patches in `vendor/workers-zig/PATCHES.md`. The important one: every in-flight
+request runs on its own 1 MiB shadow stack. Upstream shares one stack between
+concurrent requests, which corrupts memory as soon as two of them wait on KV or
+fetch at the same time (`tests/e2e` reproduces it). Deep recursion past 1 MiB
+overwrites the heap silently; raise `stack_size` in `addWorker` if you need more.
 
 ## Works today
 
@@ -14,6 +19,8 @@ Findings from building the MVP on workers-zig (pinned at `c82686d`).
   `request.arrayBuffer()` before entering wasm. hibana only copies the body into
   wasm memory when a handler reads it, but the bytes are already in JS memory, and
   bodies cannot be streamed.
+- **Unreachable upstreams give 502** (the patched shim reports the failure instead of
+  throwing). Other JS exceptions still end in a bare 500, logged but never sent to the client.
 - **`c.forward` buffers both ways.** workers-zig's outbound fetch takes the body as
   bytes and returns the upstream body as bytes. Passing the JS `ReadableStream`
   handle straight through needs new FFI in the shim.

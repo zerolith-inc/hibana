@@ -163,15 +163,34 @@ pub fn Context(comptime Rt: type, comptime Vars: type) type {
             return res;
         }
 
-        /// Sends the current request (method, headers minus `host`, body) to
-        /// `url` and returns the upstream response.
+        /// Sends the current request to `url` and returns the upstream response.
+        /// Hop-by-hop headers are dropped, and so are `cookie` and
+        /// `authorization` unless `opts.credentials` is set. The body is sent
+        /// for every method except GET and HEAD when there is one.
         pub fn forward(self: *Self, url: []const u8) !Response {
+            return self.forwardWith(url, .{});
+        }
+
+        pub fn forwardWith(self: *Self, url: []const u8, opts: ForwardOptions) !Response {
+            const all_headers = try self.req.raw.headers();
+            var connection_tokens: []const u8 = "";
+            for (all_headers) |h| {
+                if (std.ascii.eqlIgnoreCase(h.name, "connection")) connection_tokens = h.value;
+            }
             var hdrs: std.ArrayList(Header) = .empty;
-            for (try self.req.raw.headers()) |h| {
-                if (std.ascii.eqlIgnoreCase(h.name, "host")) continue;
+            for (all_headers) |h| {
+                if (isHopByHop(h.name, connection_tokens)) continue;
+                if (!opts.credentials and (std.ascii.eqlIgnoreCase(h.name, "cookie") or
+                    std.ascii.eqlIgnoreCase(h.name, "authorization"))) continue;
                 try hdrs.append(self.arena, .{ .name = h.name, .value = h.value });
             }
-            const req_body: ?[]const u8 = if (self.req.method.requestHasBody()) try self.req.text() else null;
+            const req_body: ?[]const u8 = switch (self.req.method) {
+                .GET, .HEAD => null,
+                else => blk: {
+                    const b = try self.req.text();
+                    break :blk if (b.len == 0) null else b;
+                },
+            };
             return Rt.forward(self.env, self.arena, .{
                 .method = self.req.method,
                 .url = url,
@@ -182,14 +201,42 @@ pub fn Context(comptime Rt: type, comptime Vars: type) type {
     };
 }
 
+pub const ForwardOptions = struct {
+    /// Also forward `cookie` and `authorization`.
+    credentials: bool = false,
+};
+
+/// RFC 9110 7.6.1 connection-specific headers, plus `host` and
+/// `content-length`, which the runtime sets for the new request.
+fn isHopByHop(name: []const u8, connection_tokens: []const u8) bool {
+    const fixed = [_][]const u8{
+        "connection",         "keep-alive",        "proxy-connection", "te",
+        "trailer",            "transfer-encoding", "upgrade",          "proxy-authorization",
+        "proxy-authenticate", "host",              "content-length",
+    };
+    for (fixed) |f| {
+        if (std.ascii.eqlIgnoreCase(name, f)) return true;
+    }
+    var it = std.mem.tokenizeAny(u8, connection_tokens, ", \t");
+    while (it.next()) |tok| {
+        if (std.ascii.eqlIgnoreCase(name, tok)) return true;
+    }
+    return false;
+}
+
 const UrlParts = struct { path: []const u8, query: []const u8 };
 
 /// Splits an absolute URL ("https://h/p?q") or origin-form target ("/p?q").
 pub fn splitUrl(url: []const u8) UrlParts {
     var rest = url;
-    if (std.mem.indexOf(u8, rest, "://")) |i| {
-        rest = rest[i + 3 ..];
-        rest = if (std.mem.indexOfScalar(u8, rest, '/')) |slash| rest[slash..] else "/";
+    // Only an absolute URL has a scheme; in origin form ("/p?next=http://x")
+    // a "://" belongs to the query and must not move the path.
+    if (!std.mem.startsWith(u8, rest, "/")) {
+        if (std.mem.indexOf(u8, rest, "://")) |i| {
+            rest = rest[i + 3 ..];
+            const end = std.mem.indexOfAny(u8, rest, "/?#") orelse rest.len;
+            rest = rest[end..];
+        }
     }
     if (std.mem.indexOfScalar(u8, rest, '#')) |h| rest = rest[0..h];
     if (std.mem.indexOfScalar(u8, rest, '?')) |q| {
@@ -214,6 +261,10 @@ test splitUrl {
     try std.testing.expectEqualStrings("/", splitUrl("https://example.com").path);
     try std.testing.expectEqualStrings("/", splitUrl("/?a=b").path);
     try std.testing.expectEqualStrings("/x", splitUrl("/x").path);
+    // Regression: "://" in the query must not re-route (review M1).
+    try std.testing.expectEqualStrings("/public", splitUrl("/public?next=http://x/admin").path);
+    try std.testing.expectEqualStrings("/", splitUrl("https://h?next=http://x/admin").path);
+    try std.testing.expectEqualStrings("next=http://x/admin", splitUrl("https://h?next=http://x/admin").query);
 }
 
 test decodeComponent {

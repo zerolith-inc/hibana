@@ -44,5 +44,12 @@ test "rejects bad input and unknown codes" {
         .method = .POST,
         .body = "{}",
     }).status);
+    for ([_][]const u8{ "https://a\\nb", "https://a\\r\\nset-cookie: x", "https:///nohost", "https://a b" }) |bad| {
+        const body = try std.fmt.allocPrint(a, "{{\"url\":\"{s}\"}}", .{bad});
+        try t.expectEqual(hibana.Status.bad_request, hibana.testing.request(App, a, &env, "/shorten", .{
+            .method = .POST,
+            .body = body,
+        }).status);
+    }
     try t.expectEqual(hibana.Status.not_found, hibana.testing.request(App, a, &env, "/abcdefg", .{}).status);
 }

@@ -25,7 +25,20 @@ fn proxy(c: *Ctx) !hibana.Response {
     return c.forward(target);
 }
 
+fn admin(c: *Ctx) !hibana.Response {
+    return c.text("ADMIN");
+}
+fn del(c: *Ctx) !hibana.Response {
+    return c.text("deleted");
+}
+fn go(c: *Ctx) !hibana.Response {
+    return c.redirect((try c.req.query("to")) orelse "/", .found);
+}
+
 const App = hibana.App(Rt, .{ .routes = .{
+    hibana.get("/admin", admin),
+    hibana.delete("/d", del),
+    hibana.get("/go", go),
     hibana.get("/hello/:name", hello),
     hibana.post("/echo", echo),
     hibana.post("/skip", skip),
@@ -93,4 +106,61 @@ test "std adapter serves routes, JSON, errors and forward over real HTTP" {
     const r6 = try call(a, .GET, try std.fmt.allocPrint(a, "{s}/proxy?to={s}/hello/fwd", .{ base, base }), null);
     try t.expectEqual(std.http.Status.ok, r6.status);
     try t.expectEqualStrings("hi fwd", r6.body);
+}
+
+/// Sends raw bytes on one connection and returns everything the server writes
+/// until it closes the connection (the last request asks it to).
+fn rawExchange(arena: std.mem.Allocator, port: u16, bytes: []const u8) ![]const u8 {
+    const addr: std.Io.net.IpAddress = .{ .ip4 = .loopback(port) };
+    var stream = try addr.connect(t.io, .{ .mode = .stream });
+    defer stream.close(t.io);
+    var wbuf: [1024]u8 = undefined;
+    var w = stream.writer(t.io, &wbuf);
+    try w.interface.writeAll(bytes);
+    try w.interface.flush();
+    var rbuf: [1024]u8 = undefined;
+    var r = stream.reader(t.io, &rbuf);
+    return r.interface.allocRemaining(arena, .limited(1 << 20)) catch |err| switch (err) {
+        error.ReadFailed => r.interface.buffered(),
+        else => |e| return e,
+    };
+}
+
+test "a DELETE body is consumed, not parsed as the next request (review H1)" {
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    var f: Fixture = .{};
+    try f.start();
+    defer f.stop();
+
+    const smuggled = "GET /admin HTTP/1.1\r\nHost: a\r\n\r\n";
+    const req = std.fmt.comptimePrint(
+        "DELETE /d HTTP/1.1\r\nHost: a\r\nContent-Length: {d}\r\n\r\n{s}" ++
+            "DELETE /d HTTP/1.1\r\nHost: a\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
+        .{ smuggled.len, smuggled },
+    );
+    const out = try rawExchange(arena.allocator(), f.server.port(), req);
+    try t.expectEqual(@as(usize, 2), std.mem.count(u8, out, "HTTP/1.1 200"));
+    try t.expect(std.mem.indexOf(u8, out, "ADMIN") == null);
+}
+
+test "header injection is refused and the server keeps running (review H2)" {
+    var arena: std.heap.ArenaAllocator = .init(t.allocator);
+    defer arena.deinit();
+    var f: Fixture = .{};
+    try f.start();
+    defer f.stop();
+
+    const out = try rawExchange(
+        arena.allocator(),
+        f.server.port(),
+        "GET /go?to=/x%0D%0Aset-cookie:%20pwn=1 HTTP/1.1\r\nHost: a\r\n\r\n" ++
+            "HEAD /admin HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n",
+    );
+    try t.expect(std.mem.indexOf(u8, out, "pwn") == null);
+    try t.expect(std.mem.startsWith(u8, out, "HTTP/1.1 500"));
+    // HEAD on a GET route: 200 with no body (review M3).
+    const head = out[std.mem.lastIndexOf(u8, out, "HTTP/1.1 ").?..];
+    try t.expect(std.mem.startsWith(u8, head, "HTTP/1.1 200"));
+    try t.expect(std.mem.indexOf(u8, head, "ADMIN") == null);
 }
