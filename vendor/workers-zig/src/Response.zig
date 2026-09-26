@@ -27,6 +27,17 @@ pub fn setHeader(self: *Response, name: []const u8, value: []const u8) void {
     );
 }
 
+/// Adds a header without replacing earlier values (hibana patch).
+pub fn appendHeader(self: *Response, name: []const u8, value: []const u8) void {
+    js.response_append_header(
+        self.handle,
+        name.ptr,
+        @intCast(name.len),
+        value.ptr,
+        @intCast(value.len),
+    );
+}
+
 pub fn setBody(self: *Response, data: []const u8) void {
     js.response_set_body(self.handle, data.ptr, @intCast(data.len));
 }

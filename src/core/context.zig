@@ -173,13 +173,9 @@ pub fn Context(comptime Rt: type, comptime Vars: type) type {
 
         pub fn forwardWith(self: *Self, url: []const u8, opts: ForwardOptions) !Response {
             const all_headers = try self.req.raw.headers();
-            var connection_tokens: []const u8 = "";
-            for (all_headers) |h| {
-                if (std.ascii.eqlIgnoreCase(h.name, "connection")) connection_tokens = h.value;
-            }
             var hdrs: std.ArrayList(Header) = .empty;
             for (all_headers) |h| {
-                if (isHopByHop(h.name, connection_tokens)) continue;
+                if (isHopByHop(h.name, all_headers)) continue;
                 if (!opts.credentials and (std.ascii.eqlIgnoreCase(h.name, "cookie") or
                     std.ascii.eqlIgnoreCase(h.name, "authorization"))) continue;
                 try hdrs.append(self.arena, .{ .name = h.name, .value = h.value });
@@ -206,9 +202,10 @@ pub const ForwardOptions = struct {
     credentials: bool = false,
 };
 
-/// RFC 9110 7.6.1 connection-specific headers, plus `host` and
-/// `content-length`, which the runtime sets for the new request.
-fn isHopByHop(name: []const u8, connection_tokens: []const u8) bool {
+/// RFC 9110 7.6.1 connection-specific headers, including every name listed
+/// in any `connection` field, plus `host` and `content-length`, which the
+/// runtime sets for the new request.
+fn isHopByHop(name: []const u8, headers: anytype) bool {
     const fixed = [_][]const u8{
         "connection",         "keep-alive",        "proxy-connection", "te",
         "trailer",            "transfer-encoding", "upgrade",          "proxy-authorization",
@@ -217,9 +214,12 @@ fn isHopByHop(name: []const u8, connection_tokens: []const u8) bool {
     for (fixed) |f| {
         if (std.ascii.eqlIgnoreCase(name, f)) return true;
     }
-    var it = std.mem.tokenizeAny(u8, connection_tokens, ", \t");
-    while (it.next()) |tok| {
-        if (std.ascii.eqlIgnoreCase(name, tok)) return true;
+    for (headers) |h| {
+        if (!std.ascii.eqlIgnoreCase(h.name, "connection")) continue;
+        var it = std.mem.tokenizeAny(u8, h.value, ", \t");
+        while (it.next()) |tok| {
+            if (std.ascii.eqlIgnoreCase(name, tok)) return true;
+        }
     }
     return false;
 }

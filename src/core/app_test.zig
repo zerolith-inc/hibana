@@ -51,6 +51,11 @@ fn proxyWithCredentials(c: *Ctx) !Response {
 fn go(c: *Ctx) !Response {
     return c.redirect((try c.req.query("to")) orelse "/", .found);
 }
+fn cookies(c: *Ctx) !Response {
+    try c.header("set-cookie", "a=1");
+    try c.header("set-cookie", "b=2");
+    return c.text("ok");
+}
 fn badHeaderName(c: *Ctx) !Response {
     try c.header("x a", "1");
     return c.text("x");
@@ -87,6 +92,7 @@ const App = hibana.App(Rt, .{
         hibana.all("/proxy-creds", proxyWithCredentials),
         hibana.get("/go", go),
         hibana.get("/bad-name", badHeaderName),
+        hibana.get("/cookies", cookies),
     },
 });
 
@@ -304,4 +310,39 @@ test "custom on_error and not_found" {
     const b = hibana.testing.request(CustomApp, arena.allocator(), &env, "/x", .{});
     try t.expectEqualStrings("custom 404", b.body);
     try t.expectEqual(hibana.Status.not_found, b.status);
+}
+
+test "repeated c.header values are all kept (set-cookie)" {
+    var h: Harness = .init();
+    defer h.deinit();
+    const res = h.req("/cookies", .{});
+    var n: usize = 0;
+    for (res.headers.items) |hd| {
+        if (std.ascii.eqlIgnoreCase(hd.name, "set-cookie")) n += 1;
+    }
+    try t.expectEqual(@as(usize, 2), n);
+}
+
+test "forward honors tokens from every Connection field" {
+    var h: Harness = .init();
+    defer h.deinit();
+    _ = h.req("/proxy", .{ .headers = &.{
+        .{ .name = "connection", .value = "x-internal" },
+        .{ .name = "connection", .value = "keep-alive" },
+        .{ .name = "x-internal", .value = "secret" },
+        .{ .name = "x-keep", .value = "1" },
+    } });
+    const fwd = h.env.forwarded.?;
+    try t.expectEqual(@as(usize, 1), fwd.headers.len);
+    try t.expectEqualStrings("x-keep", fwd.headers[0].name);
+}
+
+test "malformed percent escapes are not a server error" {
+    var h: Harness = .init();
+    defer h.deinit();
+    try t.expectEqualStrings("%", h.req("/search?q=%", .{}).body);
+    try t.expectEqualStrings("%ZZ", h.req("/search?q=%ZZ", .{}).body);
+    try t.expectEqual(hibana.Status.bad_request, h.req("/users/%ZZ", .{}).status);
+    try t.expectEqualStrings("x:red", h.req("/colors/x/red", .{}).body);
+    try t.expectEqualStrings("%ZZ:red", h.req("/colors/%ZZ/red", .{}).body);
 }

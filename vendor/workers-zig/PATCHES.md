@@ -9,9 +9,11 @@ Every change is marked `hibana patch` in the source.
    `__stack_pointer`. Upstream, concurrent requests suspended on KV/fetch share it and
    overwrite each other's frames. Each JSPI entry now gets a pooled stack of `stack_size`
    (default 1 MiB, down from Zig's 16 MiB), and each suspending import restores the stack
-   pointer before resuming.
+   pointer, and the request's stream/WebSocket resolvers, before resuming.
 2. **Single instantiation** (`init`): requests racing on the first call share one
    `WebAssembly.instantiate`.
 3. **No stack traces in responses**: uncaught errors are logged and answered with a bare 500.
 4. **`fetch_send` failures return a null handle** instead of throwing through wasm, so
    `Fetch.send` returns `error.NullHandle`.
+5. **`Response.appendHeader`** (`response_append_header`), so repeated fields such as
+   `set-cookie` survive.

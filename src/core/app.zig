@@ -89,8 +89,14 @@ pub fn App(comptime Rt: type, comptime config: anytype) type {
         pub fn handle(arena: Allocator, raw: *Rt.Request, env: *Rt.Env) Response {
             var c = Ctx.init(arena, raw, env) catch |err| return fallbackError(err);
             var res = chain(0)(&c) catch |err| errorResponse(&c, err);
+            // `c.header` values fill in names the response did not set itself;
+            // repeated names (set-cookie) are all kept.
+            const own = res.headers.items.len;
             for (c.headers.items) |h| {
-                if (res.header(h.name) == null) {
+                const set_by_response = for (res.headers.items[0..own]) |r| {
+                    if (std.ascii.eqlIgnoreCase(r.name, h.name)) break true;
+                } else false;
+                if (!set_by_response) {
                     res.headers.append(arena, h) catch return fallbackError(error.OutOfMemory);
                 }
             }

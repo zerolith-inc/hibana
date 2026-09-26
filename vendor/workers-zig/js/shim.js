@@ -60,11 +60,20 @@ const HAS_JSPI = typeof WebAssembly.Suspending === "function"
 function susp(fn) {
   if (!HAS_JSPI) return fn;
   // hibana patch: while this call is suspended other requests run on the
-  // same instance and move __stack_pointer; put it back before resuming.
+  // same instance and move __stack_pointer and the per-request stream/WebSocket
+  // resolvers; put them back before resuming.
   return new WebAssembly.Suspending(async (...args) => {
     const sp = _inst.exports.__stack_pointer;
     const saved = sp.value;
-    try { return await fn(...args); } finally { sp.value = saved; }
+    const streamResolve = _streamResolve;
+    const wsResolve = _wsResolve;
+    try {
+      return await fn(...args);
+    } finally {
+      sp.value = saved;
+      _streamResolve = streamResolve;
+      _wsResolve = wsResolve;
+    }
   });
 }
 
@@ -181,6 +190,8 @@ const env_imports = {
   response_new()                       { return store({ status: 200, headers: new Headers(), body: null }); },
   response_set_status(h, s)            { get(h).status = s; },
   response_set_header(h, np, nl, vp, vl) { get(h).headers.set(readStr(np, nl), readStr(vp, vl)); },
+  // hibana patch: append keeps repeated fields such as set-cookie.
+  response_append_header(h, np, nl, vp, vl) { get(h).headers.append(readStr(np, nl), readStr(vp, vl)); },
   response_set_body(h, ptr, len)       { get(h).body = new Uint8Array(mem().buffer.slice(ptr, ptr + len)); },
   response_redirect(up, ul, status) {
     const url = readStr(up, ul);
@@ -2599,7 +2610,7 @@ export function _makeDOClass(name) {
       } catch (e) {
         drop(rh);
         console.error(`[workers-zig] DO ${name}.fetch error:`, e);
-        console.error(e); // hibana patch: never send stack traces to clients
+        // hibana patch: never send stack traces to clients
         return new Response("Internal Server Error", { status: 500 });
       }
     }
@@ -2855,8 +2866,8 @@ export default {
       _wsResolve = null;
       console.error("[workers-zig] handler error:", e);
       drop(rh); drop(eh); drop(ch);
-      console.error(e); // hibana patch: never send stack traces to clients
-        return new Response("Internal Server Error", { status: 500 });
+      // hibana patch: never send stack traces to clients
+      return new Response("Internal Server Error", { status: 500 });
     }
   },
 };

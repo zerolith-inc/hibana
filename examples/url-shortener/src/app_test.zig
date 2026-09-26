@@ -53,3 +53,22 @@ test "rejects bad input and unknown codes" {
     }
     try t.expectEqual(hibana.Status.not_found, hibana.testing.request(App, a, &env, "/abcdefg", .{}).status);
 }
+
+test "memory store survives concurrent writers" {
+    var env: mem.Env = .{ .gpa = t.allocator, .io = t.io };
+    defer env.deinit();
+    const Worker = struct {
+        fn run(e: *mem.Env, id: u8) void {
+            var key: [4]u8 = undefined;
+            for (0..200) |i| {
+                key = .{ 'k', id, @intCast(i % 100), 0 };
+                mem.Store.put(e, &key, "https://example.com") catch unreachable;
+                _ = mem.Store.get(e, &key) catch unreachable;
+            }
+        }
+    };
+    var threads: [8]std.Thread = undefined;
+    for (&threads, 0..) |*th, id| th.* = try std.Thread.spawn(.{}, Worker.run, .{ &env, @as(u8, @intCast(id)) });
+    for (threads) |th| th.join();
+    try t.expectEqual(@as(u32, 8 * 100), env.links.count());
+}

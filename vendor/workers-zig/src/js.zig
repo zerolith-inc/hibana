@@ -47,6 +47,13 @@ pub extern "env" fn response_set_header(
     val_ptr: [*]const u8,
     val_len: u32,
 ) void;
+pub extern "env" fn response_append_header(
+    handle: Handle,
+    name_ptr: [*]const u8,
+    name_len: u32,
+    val_ptr: [*]const u8,
+    val_len: u32,
+) void;
 pub extern "env" fn response_set_body(handle: Handle, ptr: [*]const u8, len: u32) void;
 pub extern "env" fn response_redirect(url_ptr: [*]const u8, url_len: u32, status: u32) Handle;
 pub extern "env" fn response_clone(handle: Handle) Handle;

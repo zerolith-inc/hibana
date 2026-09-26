@@ -63,7 +63,7 @@ pub const Runtime = struct {
 pub fn toWorkers(res: hibana.Response) workers.Response {
     var out = workers.Response.new();
     out.setStatus(res.status);
-    for (res.headers.items) |h| out.setHeader(h.name, h.value);
+    for (res.headers.items) |h| out.appendHeader(h.name, h.value);
     // A body (even an empty one) is not allowed on 101/204/205/304.
     if (res.body.len > 0) out.setBody(res.body);
     return out;
