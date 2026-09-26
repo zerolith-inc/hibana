@@ -1,0 +1,7 @@
+name = "hibana-hello"
+main = "zig-out/bin/entry.js"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[build]
+command = "zig build"

@@ -1,0 +1,20 @@
+.{
+    .name = .hibana,
+    .version = "0.0.0",
+    .fingerprint = 0xd8b6b0d0d620bae9,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        // Runtime/bindings layer for Cloudflare Workers. Only the
+        // `hibana-workers` module imports it; core never does.
+        .@"workers-zig" = .{
+            .url = "https://github.com/nilslice/workers-zig/archive/c82686d8c4c612ce59b4ba197d0054a8546c5738.tar.gz",
+            .hash = "workers_zig-0.1.0-7F3MZK7LBgDTU0y0ejOJpIW1cK2vLCsHl3NSZJ2pDgPd",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+    },
+}

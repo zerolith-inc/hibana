@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Core and std adapter tests
+        run: zig build test --summary all
+      - name: Check formatting
+        run: zig fmt --check build.zig src examples/*/build.zig examples/*/src
+      - name: Example hello (worker build)
+        working-directory: examples/hello
+        run: zig build
+      - name: Example url-shortener (tests + worker build)
+        working-directory: examples/url-shortener
+        run: |
+          zig build test --summary all
+          zig build

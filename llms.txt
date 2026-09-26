@@ -1,0 +1,16 @@
+# hibana
+
+> Hono-style web framework in Zig 0.16 for Cloudflare Workers. Comptime router with typed path params, onion middleware, typed JSON bodies, Zig errors mapped to HTTP statuses. Runtime-independent core with adapters for Workers (workers-zig) and std.http.
+
+Modules: `hibana` (core, std only), `hibana-workers` (Workers adapter; `pub const fetch = hw.fetch(App);`), `hibana-std` (std.http server for local runs and tests). Build workers with `@import("hibana").addWorker(b, dep, b.path("src/main.zig"), .{})`.
+
+## Docs
+
+- [README](README.md): overview, minimal example, layout
+- [Guide](docs/guide.md): App config, handlers and typed params, Context API, middleware, error mapping, testing
+- [Runtime notes](docs/runtime-notes.md): what the Workers adapter can and cannot do yet
+
+## Examples
+
+- [hello](examples/hello/src/main.zig): minimal worker
+- [url-shortener](examples/url-shortener/src/app.zig): KV-backed app written once, run on Workers, std.http and the fake test runtime
